@@ -104,11 +104,11 @@ df_crc = spark.sql("SELECT df_crc.*, \
                        WHEN as115>=830 THEN 'super prime' \
                        ELSE 'NA' END AS as115_tier, \
                      CASE \
-                       WHEN cvsc100>=300 and cvsc100<640 THEN 1 \
-                       WHEN cvsc100>=640 AND cvsc100<720 THEN 2 \
-                       WHEN cvsc100>=720 AND cvsc100<760 THEN 3 \
-                       WHEN cvsc100>=760 AND cvsc100<800 THEN 4 \
-                       WHEN cvsc100>=800 THEN 5 \
+                       WHEN cvsc100>=300 and cvsc100<640 THEN 'subprime' \
+                       WHEN cvsc100>=640 AND cvsc100<720 THEN 'near prime' \
+                       WHEN cvsc100>=720 AND cvsc100<760 THEN 'prime' \
+                       WHEN cvsc100>=760 AND cvsc100<800 THEN 'prime plus' \
+                       WHEN cvsc100>=800 THEN 'super prime' \
                        ELSE 'NA' END AS cvsc100_tier \
                    FROM df_crc")
 
