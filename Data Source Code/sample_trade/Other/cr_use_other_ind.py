@@ -18,7 +18,7 @@ sqlContext = SQLContext(sc)
 # Load trade-level data #
 #########################
 
-df_acct = sqlContext.read.parquet("df_acct_rev.parquet")
+df_acct = sqlContext.read.parquet("df_acct.parquet")
 df_acct.createOrReplaceTempView("df_acct")
 df_acct.printSchema()
 
@@ -26,13 +26,8 @@ df_acct.printSchema()
 # Aggregate trade-level data to consumer level #
 ################################################
 
-# Already excluded:
-# 1. outdated accounts
-# 2. legacy accounts that are fully paid (PD)
-
-# Further exclude:
-# 1. fully paid (PD) / charged off (WO) accounts for number of accounts and credit limit
-
+# Calculate the consumer-level loan balances
+# Note that outdated accounts are already excluded
 df_ind = spark.sql("SELECT TU_Consumer_ID, Ref_date, \
                      SUM(IF(terminal NOT RLIKE 'WO', CURRENT_BALANCE, 0)) AS other_bal, \
                      SUM(IF(MOP RLIKE '[4-5]' AND terminal NOT RLIKE 'WO', CURRENT_BALANCE, 0)) AS other_bal_arr, \
@@ -44,7 +39,8 @@ df_ind = spark.sql("SELECT TU_Consumer_ID, Ref_date, \
 
 df_ind.createOrReplaceTempView("df_ind")
 
-# Exclude fully paid (PD) / charged off (WO) accounts for number of accounts, credit limit, and credit score at origination
+# Calculate the number of accounts and the credit limit
+# Exclude fully paid (PD) / charged off (WO) accounts for number of accounts and credit limit
 df_ind_active = spark.sql("SELECT TU_Consumer_ID, Ref_date, \
                             COUNT(TU_Trade_ID) AS N_other, \
                             SUM(cr_lmt) AS other_lmt \

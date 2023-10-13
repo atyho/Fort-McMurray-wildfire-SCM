@@ -26,31 +26,27 @@ df_acct.printSchema()
 # Aggregate trade-level data to consumer level #
 ################################################
 
-# Already excluded:
-# 1. outdated accounts
-# 2. legacy accounts that are fully paid (PD)
-
-# Further exclude:
-# 1. fully paid (PD) / charged off (WO) accounts for number of accounts and credit limit
-
-df_ind = spark.sql("SELECT TU_Consumer_ID, Ref_date, \
+# Calculate the consumer-level loan balances
+# Note that outdated accounts are already excluded
+df_ind = spark.sql("SELECT TU_Consumer_ID, Ref_date, fsa_heloc, Encrypted_LDU_heloc, prov_heloc, distance_min_heloc, FM_damage_heloc, \
                      SUM(IF(terminal NOT RLIKE 'WO', CURRENT_BALANCE, 0)) AS heloc_bal, \
                      SUM(IF(MOP RLIKE '[4-5]' AND terminal NOT RLIKE 'WO', CURRENT_BALANCE, 0)) AS heloc_bal_arr, \
                      SUM(IF(MOP RLIKE '[7-9]' AND terminal NOT RLIKE 'WO', CURRENT_BALANCE, 0)) AS heloc_bal_def, \
                      SUM(IF(terminal RLIKE 'WO', chargoff_refine, 0)) AS heloc_chargoff, \
                      SUM(IF(terminal RLIKE 'WO', chargoff_new, 0)) AS heloc_chargoff_new \
                    FROM df_acct \
-                   GROUP BY TU_Consumer_ID, Ref_date ")
+                   GROUP BY TU_Consumer_ID, Ref_date, fsa_heloc, Encrypted_LDU_heloc, prov_heloc, distance_min_heloc, FM_damage_heloc ")
 
 df_ind.createOrReplaceTempView("df_ind")
 
-# Exclude fully paid (PD) / charged off (WO) accounts for number of accounts, credit limit, and credit score at origination
-df_ind_active = spark.sql("SELECT TU_Consumer_ID, Ref_date, \
+# Calculate the number of accounts and the credit limit
+# Exclude fully paid (PD) / charged off (WO) accounts for number of accounts and credit limit
+df_ind_active = spark.sql("SELECT TU_Consumer_ID, Ref_date, fsa_heloc, Encrypted_LDU_heloc, prov_heloc, distance_min_heloc, FM_damage_heloc, \
                             COUNT(TU_Trade_ID) AS N_heloc, \
                             SUM(cr_lmt) AS heloc_lmt \
                           FROM df_acct \
                           WHERE terminal NOT RLIKE '(PD|WO)' \
-                          GROUP BY TU_Consumer_ID, Ref_date ")
+                          GROUP BY TU_Consumer_ID, Ref_date, fsa_heloc, Encrypted_LDU_heloc, prov_heloc, distance_min_heloc, FM_damage_heloc ")
 
 df_ind_active.createOrReplaceTempView("df_ind_active")
 
@@ -59,7 +55,12 @@ df_ind = spark.sql("SELECT df_ind.*, \
                    FROM df_ind \
                    LEFT JOIN df_ind_active \
                      ON df_ind.TU_Consumer_ID = df_ind_active.TU_Consumer_ID \
-                     AND df_ind.Ref_date = df_ind_active.Ref_date ")
+                     AND df_ind.Ref_date = df_ind_active.Ref_date \
+                     AND df_ind.fsa_heloc = df_ind_active.fsa_heloc \
+                     AND df_ind.Encrypted_LDU_heloc = df_ind_active.Encrypted_LDU_heloc \
+                     AND df_ind.prov_heloc = df_ind_active.prov_heloc \
+                     AND df_ind.distance_min_heloc = df_ind_active.distance_min_heloc \
+                     AND df_ind.FM_damage_heloc = df_ind_active.FM_damage_heloc ")
 
 df_ind.createOrReplaceTempView("df_ind")
 
