@@ -5,30 +5,37 @@ log using data_check.log, replace
 
 insheet using df_synth.csv, comma names case clear
 
-gen date = mofd(date(Run_Date,"YMD"))
+gen date = mofd(date(Ref_date,"YMD"))
 format date %tmCCYY-NN-DD
 
-encode fsa_mod, gen(fsa_factor)
+encode fsa, gen(fsa_factor)
 
 sort treated FM_damage fsa_factor date 
 
-drop if FM_damage == 1
+*tsspell fsa_factor
+*egen n_obs = max(_seq), by(fsa_factor)
+*egen date_first = min(date), by(fsa_factor)
+*format date_first %tmCCYY-NN-DD
 
-egen min_active_ind = min(N_active_ind), by(fsa_factor)
-drop if min_active_ind <= 1000
+gen ml_ins_rt = ml_bal_ins_tot/ml_bal_tot
+gen ml_ins_arr_rt = ml_bal_arr_ins_tot/ml_bal_ins_tot
+gen nearprime_rt = N_nearprime/N_ml_ins_holder
+gen subprime_rt = N_subprime/N_ml_ins_holder
+egen min_N_active = min(N_active), by(fsa_factor treated FM_damage)
 
-xtset fsa_factor date
+tabstat N_active ml_bal_ins ml_ins_rt bc_use nearprime_rt subprime_rt N_ml_ins_holder min_N_active /*
+*/ if treated == 1 & FM_damage == 1, s(mean sd)
 
-tsspell fsa_factor
-egen n_obs = max(_seq), by(fsa_factor)
+tabstat N_active ml_bal_ins ml_ins_rt bc_use nearprime_rt subprime_rt N_ml_ins_holder min_N_active /*
+*/ if treated == 1 & FM_damage == 0, s(mean sd)
 
-egen date_first = min(date), by(fsa_factor)
-format date_first %tmCCYY-NN-DD
+tabstat N_active ml_bal_ins ml_ins_rt bc_use nearprime_rt subprime_rt N_ml_ins_holder min_N_active /*
+*/ if treated == 0, s(mean sd)
 
-gen ML_insured_rt = ml_bal_ins_tot/ml_bal_tot
+line ml_ins_arr_rt date if treated == 1 & FM_damage == 1, saving(FM_severe)
 
-collapse (mean) N_res_holder N_active_ind h_own_rt ML_insured_rt, by(fsa_mod)
+line ml_ins_arr_rt date if treated == 1 & FM_damage == 0, saving(FM_other)
 
-statsmat N_res_holder N_active_ind h_own_rt ML_insured_rt if N_active_ind >= 1000 , s(mean sd p25 p50 p75)
+gr combine FM_severe.gph FM_other.gph, ycommon
 
 log close

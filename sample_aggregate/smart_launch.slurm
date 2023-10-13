@@ -7,12 +7,9 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=36
 #SBATCH --time=6:00:00
-#SBATCH --mem=110G
-#SBATCH -p short
+#SBATCH --mem=240G
+#SBATCH -p normal
 
-echo "Spark loading..."
-module purge
-module load slurm
 module load sbt
 module load anaconda2/4.3.1
 module load java/1.8.0_141

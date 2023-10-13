@@ -19,7 +19,7 @@ sqlContext = SQLContext(sc)
 ####################
 
 # Load consumer-level CRC data
-df_cdb = sqlContext.read.parquet("../sample_crc/df_cdb.parquet").drop("heloc_bal","ml_bal")
+df_cdb = sqlContext.read.parquet("../sample_crc/df_cdb.parquet").drop("N_ml","ml_bal","N_heloc","heloc_bal","heloc_lmt")
 df_cdb.createOrReplaceTempView("df_cdb")
 df_cdb.printSchema()
 
@@ -97,112 +97,130 @@ df_ind.createOrReplaceTempView("df_ind")
 ##################################
 
 # Define control as dissemination area at least 100km away from Fort McMurray
+# Keep treated and control groups only
 df_ind = spark.sql("SELECT *, \
                      CASE WHEN fsa RLIKE '^(T9H|T9J|T9K)$' THEN 1 ELSE 0 END AS treated, \
                      CASE WHEN prov RLIKE '(AB|SK)' and distance_min >= 100.0 THEN 1 ELSE 0 END AS control \
-                   FROM df_ind ")
-
-df_ind.createOrReplaceTempView("df_ind")
-
-#############################
-# Filter data for relevance #
-#############################
-
-# Keep treated and control groups only
-# Keep credit active consumers only
-df_ind = spark.sql("SELECT * FROM df_ind \
-                   WHERE \
-                     ( IFNULL(ml_bal,0) + IFNULL(heloc_bal,0) + IFNULL(other_bal,0) + IFNULL(bc_lmt,0) ) > 0 \
-                     AND (treated = 1 OR control = 1) ")
+                   FROM df_ind ") \
+         .where("treated = 1 OR control = 1 ")
 
 df_ind.createOrReplaceTempView("df_ind")
 
 # Save working data set
 print('Saving data to files...')
 df_ind.printSchema()
-#df_ind.write.parquet(path="df_ind.parquet", mode="overwrite")
+df_ind.write.parquet(path="df_ind.parquet", mode="overwrite")
 
 df_ind = sqlContext.read.parquet("df_ind.parquet")
+df_ind.createOrReplaceTempView("df_ind")
+
+#############################
+# Filter data for relevance #
+#############################
+
+# Keep credit active consumers only
+# Group all treated FSAs into one single area
+df_ind = spark.sql("SELECT *, \
+                     CASE WHEN treated = 1 THEN 'T9(H|J|K)' ELSE fsa END AS fsa_grp \
+                   FROM df_ind \
+                   WHERE (ml_bal + heloc_bal + other_bal + bc_lmt) > 0 ") \
+         .drop("fsa").withColumnRenamed("fsa_grp", "fsa")
+
 df_ind.createOrReplaceTempView("df_ind")
 
 #####################
 # Regional data set #
 #####################
 
-# Group all treated FSAs into one single area
-df_ind = spark.sql("SELECT *, CASE WHEN treated = 1 THEN 'T9(H|J|K)' ELSE fsa END AS fsa_mod FROM df_ind ")
-df_ind.createOrReplaceTempView("df_ind")
-
 # Aggregation for insured mortgage holders
-df_synth = spark.sql("SELECT Run_Date, treated, FM_damage, fsa_mod, \
+df_synth = spark.sql("SELECT Run_Date, treated, FM_damage, fsa, \
                        COUNT(DISTINCT tu_consumer_id) AS N_ml_ins, \
-                       SUM(heloc_exist) AS N_heloc, \
-                       AVG(ml_bal_ins + ml_chargoff_new_ins) AS ml_bal_ins, \
-                       AVG(heloc_bal + heloc_chargoff_new) AS heloc_bal, \
-                       AVG(ml_bal + ml_chargoff_new + heloc_bal + heloc_chargoff_new) AS res_bal, \
-                       AVG(other_bal + other_chargoff_new) AS cl_bal, \
-                       AVG(bc_bal + bc_chargoff_new) AS bc_bal, \
-                       AVG(bc_bal/bc_lmt) AS bc_use_avg, \
+                       AVG(ml_bal_ins) AS ml_bal_ins, \
+                       AVG(heloc_bal) AS heloc_bal, \
+                       AVG(ml_bal + heloc_bal) AS res_bal, \
+                       AVG(other_bal) AS cl_bal, \
+                       AVG(bc_bal) AS bc_bal, \
+                       AVG(IFNULL(bc_bal/bc_lmt, 0)) AS bc_use, \
                        SUM(IF(bc_bal/bc_lmt >= 0.6 AND bc_bal/bc_lmt < 0.8, 1, 0)) AS N_bc_use_60_80, \
                        SUM(IF(bc_bal/bc_lmt >= 0.8, 1, 0)) AS N_bc_use_80_plus, \
                        AVG(cvsc100) AS cr_score, \
-                       SUM(IF(cvsc100 < 640, 1, 0)) AS N_subprime, \
-                       SUM(IF(cvsc100 >= 640 AND cvsc100 < 720, 1, 0)) AS N_nearprime \
+                       SUM(IF(cvsc100 >= 640 AND cvsc100 < 720, 1, 0)) AS N_nearprime, \
+                       SUM(IF(cvsc100 < 640, 1, 0)) AS N_subprime \
                      FROM df_ind \
                      WHERE (ml_exist = 1 AND ml_bal_ins > 0) \
-                     GROUP BY Run_Date, treated, FM_damage, fsa_mod ")
+                     GROUP BY Run_Date, treated, FM_damage, fsa ")
 
 df_synth.createOrReplaceTempView("df_synth")
 
 ################################################
-# Join aggregate data set with other variables #
+# Join data set with other aggregate variables #
 ################################################
 
-df_fsa_lv = spark.sql("SELECT Run_Date, treated, FM_damage, fsa_mod, \
-                        SUM(ml_bal + ml_chargoff_new)/1000000 AS ml_bal_tot, \
+df_fsa_lv = spark.sql("SELECT Run_Date, treated, FM_damage, fsa, \
+                        COUNT(DISTINCT tu_consumer_id) AS N_active, \
+                        AVG(cvsc100) AS cr_score_fsa, \
+                        SUM(IF(cvsc100 >= 640 AND cvsc100 < 720, 1, 0)) AS N_nearprime_fsa, \
+                        SUM(IF(cvsc100 < 640, 1, 0)) AS N_subprime_fsa, \
+                        SUM(ml_bal)/1000000 AS ml_bal_tot, \
                         SUM(ml_bal_arr + ml_bal_def)/1000000 AS ml_bal_arr_tot, \
                         SUM(ml_chargoff_new)/1000000 AS ml_chargoff_new_tot, \
-                        SUM(ml_bal_ins + ml_chargoff_new_ins)/1000000 AS ml_bal_ins_tot, \
+                        SUM(ml_bal_ins)/1000000 AS ml_bal_ins_tot, \
                         SUM(ml_bal_arr_ins + ml_bal_def_ins)/1000000 AS ml_bal_arr_ins_tot, \
                         SUM(ml_chargoff_new_ins)/1000000 AS ml_chargoff_new_ins_tot, \
-                        SUM(heloc_bal + heloc_chargoff_new)/1000000 AS heloc_bal_tot, \
+                        SUM(heloc_bal)/1000000 AS heloc_bal_tot, \
                         SUM(heloc_bal_arr + heloc_bal_def)/1000000 AS heloc_bal_arr_tot, \
                         SUM(heloc_chargoff_new)/1000000 AS heloc_chargoff_new_tot, \
-                        COUNT(DISTINCT tu_consumer_id) AS N_active, \
-                        SUM(IF(age < 35, 1, 0)) AS N_age_below_35, \
-                        SUM(IF(age >= 35 AND age <50, 1, 0)) AS N_age_35_50, \
-                        SUM(IF(age >= 50 AND age <65, 1, 0)) AS N_age_50_65, \
-                        SUM(homeowner) AS N_homeowner \
+                        AVG(bc_bal) AS bc_bal_fsa, \
+                        AVG(IFNULL(bc_bal/bc_lmt, 0)) AS bc_use_fsa, \
+                        SUM(IF(bc_bal/bc_lmt >= 0.6 AND bc_bal/bc_lmt < 0.8, 1, 0)) AS N_bc_use_60_80_fsa, \
+                        SUM(IF(bc_bal/bc_lmt >= 0.8, 1, 0)) AS N_bc_use_80_plus_fsa, \
+                        SUM(bc_bal)/1000000 AS bc_bal_tot, \
+                        SUM(bc_bal_arr + bc_bal_def)/1000000 AS bc_bal_arr_tot, \
+                        SUM(bc_chargoff_new)/1000000 AS bc_chargoff_new_tot, \
+                        SUM(other_bal)/1000000 AS other_bal_tot, \
+                        SUM(other_bal_arr + other_bal_def)/1000000 AS other_bal_arr_tot, \
+                        SUM(other_chargoff_new)/1000000 AS other_chargoff_new_tot \
                       FROM df_ind \
-                      GROUP BY Run_Date, treated, FM_damage, fsa_mod ")
+                      GROUP BY Run_Date, treated, FM_damage, fsa ")
 
 df_fsa_lv.createOrReplaceTempView("df_fsa_lv")
 
-df_synth = spark.sql("SELECT df_synth.*, \
+df_synth = spark.sql("SELECT df_synth.*, N_active, cr_score_fsa, N_nearprime_fsa, N_subprime_fsa, \
                        df_fsa_lv.ml_bal_tot, df_fsa_lv.ml_bal_arr_tot, df_fsa_lv.ml_chargoff_new_tot, \
                        df_fsa_lv.ml_bal_ins_tot, df_fsa_lv.ml_bal_arr_ins_tot, df_fsa_lv.ml_chargoff_new_ins_tot, \
                        df_fsa_lv.heloc_bal_tot, df_fsa_lv.heloc_bal_arr_tot, df_fsa_lv.heloc_chargoff_new_tot, \
-                       df_fsa_lv.N_active, df_fsa_lv.N_age_below_35, df_fsa_lv.N_age_35_50, df_fsa_lv.N_age_50_65, df_fsa_lv.N_homeowner \
+                       bc_bal_fsa, bc_use_fsa, N_bc_use_60_80_fsa, N_bc_use_80_plus_fsa, \
+                       df_fsa_lv.bc_bal_tot, df_fsa_lv.bc_bal_arr_tot, df_fsa_lv.bc_chargoff_new_tot, \
+                       df_fsa_lv.other_bal_tot, df_fsa_lv.other_bal_arr_tot, df_fsa_lv.other_chargoff_new_tot \
                      FROM df_synth \
                      LEFT JOIN df_fsa_lv \
                        ON df_synth.Run_Date = df_fsa_lv.Run_Date \
                        AND df_synth.treated = df_fsa_lv.treated \
                        AND df_synth.FM_damage = df_fsa_lv.FM_damage \
-                       AND df_synth.fsa_mod = df_fsa_lv.fsa_mod ")
+                       AND df_synth.fsa = df_fsa_lv.fsa ")
 
 df_synth.createOrReplaceTempView("df_synth")
 
-# Drop rural FSAs and FSAs with less than 5000 credit-active individuals
+##########################################################################
+# Drop rural FSAs and FSAs with less than 5000 credit-active individuals #
+##########################################################################
+
+# Filter by selection criteria
+df_keep = spark.sql("SELECT DISTINCT treated, FM_damage, fsa \
+                    FROM df_synth \
+                    WHERE SUBSTRING(fsa, 2, 1) NOT LIKE '0' \
+                    GROUP BY treated, FM_damage, fsa \
+                    HAVING MIN(N_active) >= 5000 OR MIN(treated) = 1 ")
+
+df_keep.createOrReplaceTempView("df_keep")
+
+# Apply filter
 df_synth = spark.sql("SELECT df_synth.* \
                      FROM df_synth \
-                     INNER JOIN \
-                       ( SELECT DISTINCT treated, FM_damage, fsa_mod FROM df_fsa_lv \
-                         WHERE SUBSTRING(fsa_mod, 2, 1) NOT LIKE '0' \
-                         GROUP BY treated, FM_damage, fsa_mod \
-                         HAVING MIN(N_active) >= 5000 OR MIN(treated) = 1 ) AS df_keep \
+                     INNER JOIN df_keep \
                        ON df_synth.treated = df_keep.treated \
                        AND df_synth.FM_damage = df_keep.FM_damage \
-                       AND df_synth.fsa_mod = df_keep.fsa_mod ")
+                       AND df_synth.fsa = df_keep.fsa ")
 
 df_synth.createOrReplaceTempView("df_synth")
 
@@ -214,16 +232,18 @@ df_synth.write.csv(path="df_synth", mode="overwrite", sep=",", header="true")
 # Descriptive statistics #
 ##########################
 
-df_fact = spark.sql("SELECT FM_damage, treated, \
-                      COUNT(DISTINCT fsa_mod) AS N_fsa, \
+# Only for data within the event timeframe
+df_fact = spark.sql("SELECT treated, FM_damage, \
+                      COUNT(DISTINCT fsa) AS N_fsa, \
                       AVG(N_active) AS N_active_avg, STD(N_active) AS N_active_sd, \
                       AVG(ml_bal_ins) AS ml_bal_ins_avg, STD(ml_bal_ins) AS ml_bal_ins_sd, \
                       AVG(ml_bal_ins_tot/ml_bal_tot) AS ml_ins_rt_avg, STD(ml_bal_ins_tot/ml_bal_tot)AS ml_ins_rt_sd, \
-                      AVG(bc_use_avg) AS bc_use_avg, STD(bc_use_avg) AS bc_use_sd, \
+                      AVG(bc_use) AS bc_use_avg, STD(bc_use) AS bc_use_sd, \
                       AVG(N_nearprime/N_ml_ins) AS nearprime_rt_avg, STD(N_nearprime/N_ml_ins) AS nearprime_rt_sd, \
                       AVG(N_subprime/N_ml_ins) AS subprime_rt_avg, STD(N_subprime/N_ml_ins) AS subprime_rt_sd \
                     FROM df_synth \
-                    GROUP BY FM_damage, treated ")
+                    WHERE Run_Date BETWEEN DATE('2014-01-01') AND DATE('2018-01-01') \
+                    GROUP BY treated, FM_damage ")
 
 df_fact.createOrReplaceTempView("df_fact")
 
