@@ -3,7 +3,7 @@ capture log close
 
 log using data_check.log, replace
 
-insheet using df_synth.csv, comma names case clear
+insheet using tu_acct_sample.csv, comma names case clear
 
 gen date = mofd(date(Ref_date,"YMD"))
 format date %tmCCYY-NN-DD
@@ -45,7 +45,7 @@ drop if L3 != "BNS"
 gen arr = 0
 *replace arr = 2 if MOP >= 2
 *replace arr = 3 if MOP >= 3
-replace arr = 4 if MOP_new >= 4
+replace arr = 4 if MOP >= 4
 *replace arr = 5 if MOP >= 5
 *replace arr = 7 if MOP >= 7
 
