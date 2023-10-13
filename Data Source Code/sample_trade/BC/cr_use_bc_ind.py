@@ -18,7 +18,7 @@ sqlContext = SQLContext(sc)
 # Load trade-level data #
 #########################
 
-df_acct = sqlContext.read.parquet("df_acct_rev.parquet")
+df_acct = sqlContext.read.parquet("df_acct.parquet")
 df_acct.createOrReplaceTempView("df_acct")
 df_acct.printSchema()
 

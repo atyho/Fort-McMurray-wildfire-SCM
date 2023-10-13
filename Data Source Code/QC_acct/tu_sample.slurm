@@ -6,17 +6,13 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=36
-#SBATCH --time=24:00:00
-#SBATCH --mem=120G
+#SBATCH --time=23:59:59
+#SBATCH --mem=115G
 
-module purge
-module load slurm
 module load sbt
 module load anaconda2/4.3.1
 module load java/1.8.0_141
 module load spark/2.3.0
-module load R
-module list
 
 ulimit -s unlimited
 ulimit -u 81920

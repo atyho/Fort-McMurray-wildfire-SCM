@@ -17,34 +17,35 @@ sqlContext = SQLContext(sc)
 ########################
 
 # Load files for data
-df_data = sqlContext.read.parquet("../sample_trade/ML/df_acct.parquet")
-df_data.createOrReplaceTempView("df_data")
+df_acct = sqlContext.read.parquet("../sample_trade/ML/df_acct.parquet")
+df_acct.createOrReplaceTempView("df_acct")
 
 # Load files for CRC data
-df_crc = sqlContext.read.parquet("../sample_crc/df_cdb.parquet")
+df_crc = sqlContext.read.parquet("../sample_crc/df_crc.parquet")
 df_crc.createOrReplaceTempView("df_crc")
-
-# Join CRC data with individual loan data
-df_data = spark.sql("SELECT df_data.*, df_crc.fsa, df_crc.FM_damage \
-                    FROM df_data \
-                    LEFT JOIN df_crc \
-                      ON df_data.TU_Consumer_ID = df_crc.tu_consumer_id \
-                      AND df_data.Run_date = df_crc.Run_Date ")
-
-df_data.createOrReplaceTempView("df_data")
 
 #########################################################
 # Create a sample dataset of consumer ID using CRC data #
 #########################################################
 
-df_cid_sample = df_data.where("FM_damage==1").select("TU_Trade_ID").distinct().sample(False, 1.0, 1983)
+# Sampling CRC files
+#df_data = spark.sql("SELECT * FROM df_crc WHERE tu_consumer_id IN (358272014, 999535902) ")
+#tu_consumer_id IN (358272014, 999535902, 272476822, 439290455)
+#df_data.createOrReplaceTempView("df_data")
+
+# Sampling account files
+#df_data = spark.sql("SELECT * FROM df_acct WHERE TU_Consumer_ID IN (272476822, 439290455) ")
+#TU_Consumer_ID IN (358272014, 999535902, 272476822, 439290455)
+#df_data.createOrReplaceTempView("df_data")
+
+df_cid_sample = df_acct.where("treated_ind = 1").select("TU_Trade_ID").distinct().sample(False, 1.0, 1983)
 df_cid_sample.createOrReplaceTempView("df_cid_sample")
 
 # Sampling account files
-df_data = spark.sql("SELECT df_data.* \
-                    FROM df_data \
-                    INNER JOIN df_cid_sample \
-                      ON df_data.TU_Trade_ID = df_cid_sample.TU_Trade_ID ")
+df_data = spark.sql("SELECT df_acct.* \
+                   FROM df_acct \
+                   INNER JOIN df_cid_sample \
+                     ON df_acct.TU_Trade_ID = df_cid_sample.TU_Trade_ID ")
 
 df_data.createOrReplaceTempView("df_data")
 

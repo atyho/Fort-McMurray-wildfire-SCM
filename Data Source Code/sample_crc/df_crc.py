@@ -20,7 +20,8 @@ sqlContext = SQLContext(sc)
 
 # Load files for CRC data
 df_crc = sqlContext.read.parquet("/appdata/TU/TU_Official/CRCS_LDU/crcs_ldu_201[1-9]*_parq") \
-  .select("tu_consumer_id", "Run_Date", col("fsa").alias("fsa_raw"), col("Encrypted_LDU").alias("Encrypted_LDU_raw"), "go30", "go90", col("go91").alias("deceased"), "as115", "cvsc100") \
+  .select("tu_consumer_id", "Run_Date", "fsa", "Encrypted_LDU", \
+          "go30", "go90", col("go91").alias("deceased"), "as115", "cvsc100") \
   .withColumn("Run_Date", to_date(concat(col("Run_Date").substr(1,4),lit("-"),col("Run_Date").substr(5,2),lit("-01")))) \
   .replace(0, None, subset="as115").replace(-8, None, subset="cvsc100").replace(0, None, subset="cvsc100")
 
@@ -34,38 +35,11 @@ df_pccf = spark.read.csv("pccf_can_nov2019.csv", header=True) \
 
 df_pccf.createOrReplaceTempView("df_pccf")
 
-# Load data for Fort McMurray area with severe damange
+# Load data for Fort McMurray postal codes with severe damange
 df_FMD = spark.read.csv("FM_community.csv", header=True) \
   .withColumn("pstlcode", regexp_replace(col("postal_code"),"\s+",""))
 
 df_FMD.createOrReplaceTempView("df_FMD")
-
-####################################################################################################
-# Identify treated individuals and Prevent postal code changes in treated area during the disaster #
-####################################################################################################
-
-df_pre_trt = spark.sql("SELECT tu_consumer_id, Run_Date, fsa_raw, Encrypted_LDU_raw \
-                       FROM df_crc \
-                       WHERE \
-                         Run_Date = DATE('2016-05-01') \
-                         AND fsa_raw RLIKE '^(T9H|T9J|T9K)$' ")
-
-df_pre_trt.createOrReplaceTempView("df_pre_trt")
-
-# Note that those treated individuals may not live in Fort McMurray before or after the 2016 wildfire
-df_crc = spark.sql("SELECT df_now.*, \
-                     CASE WHEN df_pre_trt.tu_consumer_id IS NOT NULL THEN 1 ELSE 0 END AS treated_ind, \
-                     CASE WHEN df_pre_trt.tu_consumer_id IS NOT NULL AND df_now.fsa_raw NOT RLIKE '^(T9H|T9J|T9K)$' \
-                         AND (df_now.Run_Date BETWEEN df_pre_trt.Run_Date AND DATE('2016-11-01')) \
-                       THEN df_pre_trt.fsa_raw ELSE df_now.fsa_raw END AS fsa, \
-                     CASE WHEN df_pre_trt.tu_consumer_id IS NOT NULL AND df_now.fsa_raw NOT RLIKE '^(T9H|T9J|T9K)$' \
-                         AND (df_now.Run_Date BETWEEN df_pre_trt.Run_Date AND DATE('2016-11-01')) \
-                       THEN df_pre_trt.Encrypted_LDU_raw ELSE df_now.Encrypted_LDU_raw END AS Encrypted_LDU \
-                   FROM df_crc AS df_now \
-                   LEFT JOIN df_pre_trt \
-                     ON df_now.tu_consumer_id = df_pre_trt.tu_consumer_id ")
-
-df_crc.createOrReplaceTempView("df_crc")
 
 ##################################################
 # Create age groups and refine consumer province #
@@ -114,11 +88,50 @@ df_crc = spark.sql("SELECT df_crc.*, \
 
 df_crc.createOrReplaceTempView("df_crc")
 
-###############################################
-# Only keep consumers in Alberta/Saskatchewan #
-###############################################
+#####################
+# Consumer Sampling #
+#####################
 
-df_crc = df_crc.where("(deceased LIKE 'N') AND (prov RLIKE '(AB|SK)' OR treated_ind = 1)").drop("deceased")
+# Create a list of consumers who has ever lived in Alberta/Saskatchewan 
+# This is a coarse way to trim down the size of the data set, will further refine the target sample in later processes 
+df_sample_id = df_crc.where("prov RLIKE '(AB|SK)'").select("tu_consumer_id").distinct()
+df_sample_id.createOrReplaceTempView("df_sample_id")
+
+# Only keeping the selected consumer records, also drop records for deceased consumers
+df_crc = spark.sql("SELECT df_crc.* \
+                   FROM df_crc \
+                   INNER JOIN df_sample_id \
+                     ON df_crc.tu_consumer_id = df_sample_id.tu_consumer_id \
+                   WHERE deceased LIKE 'N' ").drop("deceased")
+
+df_crc.createOrReplaceTempView("df_crc")
+
+#############################################################################################
+# Identify treated individuals to prevent changes in their postal codes DURING the disaster #
+#############################################################################################
+
+# Identify a list of individuals who lived in Fort McMurray when the wildfire began
+df_pre_trt = spark.sql("SELECT tu_consumer_id, fsa, Encrypted_LDU FROM df_crc \
+                       WHERE Run_Date = DATE('2016-05-01') AND fsa RLIKE '^(T9H|T9J|T9K)$' ")
+
+df_pre_trt.createOrReplaceTempView("df_pre_trt")
+
+# Note that those treated individuals may not live in Fort McMurray before or after the 2016 wildfire
+# Also adjust their residential postal codes which might have changed during the evacuation period (minor effect)
+df_crc = spark.sql("SELECT df_crc.*, \
+                     CASE WHEN df_pre_trt.tu_consumer_id IS NOT NULL THEN 1 ELSE 0 END AS treated_ind, \
+                     CASE WHEN df_pre_trt.tu_consumer_id IS NOT NULL AND df_crc.fsa NOT RLIKE '^(T9H|T9J|T9K)$' \
+                         AND (df_crc.Run_Date BETWEEN DATE('2016-05-01') AND DATE('2016-11-01')) \
+                       THEN df_pre_trt.fsa ELSE df_crc.fsa END AS fsa_adj, \
+                     CASE WHEN df_pre_trt.tu_consumer_id IS NOT NULL AND df_crc.fsa NOT RLIKE '^(T9H|T9J|T9K)$' \
+                       AND (df_crc.Run_Date BETWEEN DATE('2016-05-01') AND DATE('2016-11-01')) \
+                       THEN df_pre_trt.Encrypted_LDU ELSE df_crc.Encrypted_LDU END AS Encrypted_LDU_adj \
+                   FROM df_crc \
+                   LEFT JOIN df_pre_trt \
+                     ON df_crc.tu_consumer_id = df_pre_trt.tu_consumer_id ") \
+         .withColumnRenamed("fsa","fsa_reported").withColumnRenamed("Encrypted_LDU","Encrypted_LDU_reported") \
+         .withColumnRenamed("fsa_adj","fsa").withColumnRenamed("Encrypted_LDU_adj","Encrypted_LDU")
+
 df_crc.createOrReplaceTempView("df_crc")
 
 #############################
@@ -155,10 +168,6 @@ df_pccf = spark.sql("SELECT df_pccf.*, \
 
 df_pccf.createOrReplaceTempView("df_pccf")
 
-#######################################
-# Identify census dissemination areas #
-#######################################
-
 # Load mapping key
 df_mapping = spark.read.csv("dtalink.csv", header=True).where("N_repeat < 2")
 df_mapping.createOrReplaceTempView("df_mapping")
@@ -172,7 +181,7 @@ df_crc = spark.sql("SELECT df_crc.*, df_mapping.LDU AS LDU_key \
 df_crc.createOrReplaceTempView("df_crc")
 
 # Join consumer credit records with PCCF; only keep valid postal codes
-df_crc = spark.sql("SELECT df_crc.*, df_pccf.dauid, df_pccf.sactype, df_pccf.FM_damage, df_pccf.distance_min \
+df_crc = spark.sql("SELECT df_crc.*, df_pccf.FM_damage, df_pccf.distance_min \
                    FROM df_crc \
                    INNER JOIN df_pccf \
                      ON df_crc.fsa = df_pccf.fsa \

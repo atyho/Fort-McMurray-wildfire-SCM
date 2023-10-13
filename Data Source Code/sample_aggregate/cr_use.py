@@ -19,9 +19,9 @@ sqlContext = SQLContext(sc)
 ####################
 
 # Load consumer-level CRC data
-df_cdb = sqlContext.read.parquet("../sample_crc/df_cdb.parquet").drop("N_ml","ml_bal","N_heloc","heloc_bal","heloc_lmt")
-df_cdb.createOrReplaceTempView("df_cdb")
-df_cdb.printSchema()
+df_crc = sqlContext.read.parquet("../sample_crc/df_crc.parquet")
+df_crc.createOrReplaceTempView("df_crc")
+df_crc.printSchema()
 
 # Load account-level mortgage data
 df_ML = sqlContext.read.parquet("../sample_trade/ML/df_ind.parquet")
@@ -43,19 +43,49 @@ df_other = sqlContext.read.parquet("../sample_trade/Other/df_ind.parquet")
 df_other.createOrReplaceTempView("df_other")
 df_other.printSchema()
 
-############################
-# Merge loan data with CRC #
-############################
+##########################################################
+# Create individual-level data set for residential loans #
+##########################################################
+
+# Aggregate to individual-level mortgage data
+df_ML = spark.sql("SELECT TU_Consumer_ID, Ref_date, \
+                    SUM(ml_bal) AS ml_bal, \
+                    SUM(ml_bal_arr) AS ml_bal_arr, \
+                    SUM(ml_bal_def) AS ml_bal_def, \
+                    SUM(ml_chargoff_new) AS ml_chargoff_new, \
+                    SUM(ml_bal_ins) AS ml_bal_ins, \
+                    SUM(ml_bal_arr_ins) AS ml_bal_arr_ins, \
+                    SUM(ml_bal_def_ins) AS ml_bal_def_ins, \
+                    SUM(ml_chargoff_new_ins) AS ml_chargoff_new_ins \
+                  FROM df_ML \
+                  GROUP BY TU_Consumer_ID, Ref_date ")
+
+df_ML.createOrReplaceTempView("df_ML")
+
+# Aggregate to individual-level HELOC data
+df_HELOC = spark.sql("SELECT TU_Consumer_ID, Ref_date, \
+                       SUM(heloc_bal) AS heloc_bal, \
+                       SUM(heloc_bal_arr) AS heloc_bal_arr, \
+                       SUM(heloc_bal_def) AS heloc_bal_def, \
+                       SUM(heloc_chargoff_new) AS heloc_chargoff_new \
+                     FROM df_HELOC \
+                     GROUP BY TU_Consumer_ID, Ref_date ")
+
+df_HELOC.createOrReplaceTempView("df_HELOC")
+
+###########################################
+# Create individual-level credit data set #
+###########################################
 
 # Merge with mortgage data
-df_ind = spark.sql("SELECT df_cdb.*, \
+df_ind = spark.sql("SELECT df_crc.*, \
                      df_ML.ml_bal, df_ML.ml_bal_arr, df_ML.ml_bal_def, df_ML.ml_chargoff_new, \
                      df_ML.ml_bal_ins, df_ML.ml_bal_arr_ins, df_ML.ml_bal_def_ins, df_ML.ml_chargoff_new_ins, \
                      CASE WHEN df_ML.TU_Consumer_ID IS NOT NULL THEN 1 ELSE 0 END AS ml_exist \
-                   FROM df_cdb \
+                   FROM df_crc \
                    LEFT JOIN df_ML \
-                     ON df_cdb.tu_consumer_id = df_ML.TU_Consumer_ID \
-                     AND df_cdb.Run_Date = df_ML.Ref_date ").fillna(value=0)
+                     ON df_crc.tu_consumer_id = df_ML.TU_Consumer_ID \
+                     AND df_crc.Run_Date = df_ML.Ref_date ").fillna(value=0)
 
 df_ind.createOrReplaceTempView("df_ind")
 
@@ -102,7 +132,7 @@ df_ind = spark.sql("SELECT *, \
                      CASE WHEN fsa RLIKE '^(T9H|T9J|T9K)$' THEN 1 ELSE 0 END AS treated, \
                      CASE WHEN prov RLIKE '(AB|SK)' and distance_min >= 100.0 THEN 1 ELSE 0 END AS control \
                    FROM df_ind ") \
-         .where("treated = 1 OR control = 1 ")
+         .where("(treated = 1 OR control = 1)") \
 
 df_ind.createOrReplaceTempView("df_ind")
 
@@ -140,6 +170,7 @@ df_synth = spark.sql("SELECT Run_Date, treated, FM_damage, fsa, \
                        AVG(ml_bal + heloc_bal) AS res_bal, \
                        AVG(other_bal) AS cl_bal, \
                        AVG(bc_bal) AS bc_bal, \
+                       AVG(bc_bal_arr + bc_bal_def) AS bc_bal_arr, \
                        AVG(IFNULL(bc_bal/bc_lmt, 0)) AS bc_use, \
                        SUM(IF(bc_bal/bc_lmt >= 0.6 AND bc_bal/bc_lmt < 0.8, 1, 0)) AS N_bc_use_60_80, \
                        SUM(IF(bc_bal/bc_lmt >= 0.8, 1, 0)) AS N_bc_use_80_plus, \

@@ -17,20 +17,16 @@ sqlContext = SQLContext(sc)
 ########################
 
 # Load files for data
-df_data = sqlContext.read.parquet("../sample_aggregate/df_ind.parquet")
+df_data = sqlContext.read.parquet("../sample_crc/df_crc.parquet")
 df_data.createOrReplaceTempView("df_data")
 
 #########################################################
 # Create a sample dataset of consumer ID using CRC data #
 #########################################################
 
-# Fort McMurray residents only
-df_cid_sample = df_data.where("FM_damage==1").select("tu_consumer_id").distinct().sample(False, 1.0, 1983)
+# Sampling criteria
+df_cid_sample = df_data.select("tu_consumer_id").distinct().sample(False, 0.01, 1983)
 df_cid_sample.createOrReplaceTempView("df_cid_sample")
-
-# Whole sample
-#df_cid_sample = df_data.select("tu_consumer_id").distinct().sample(False, 0.01, 1983)
-#df_cid_sample.createOrReplaceTempView("df_cid_sample")
 
 # Sampling account files
 df_data = spark.sql("SELECT df_data.* \

@@ -26,14 +26,9 @@ df_acct.printSchema()
 # Aggregate trade-level data to consumer level #
 ################################################
 
-# Already excluded:
-# 1. outdated accounts
-# 2. legacy accounts that are fully paid (PD)
-
-# Further exclude:
-# 1. fully paid (PD) / charged off (WO) accounts for number of accounts and credit limit
-
-df_ind = spark.sql("SELECT TU_Consumer_ID, Ref_date, \
+# Calculate the consumer-level loan balances
+# Note that outdated accounts are already excluded
+df_ind = spark.sql("SELECT TU_Consumer_ID, Ref_date, fsa_ml, Encrypted_LDU_ml, prov_ml, distance_min_ml, FM_damage_ml, \
                      SUM(IF(terminal NOT RLIKE 'WO', CURRENT_BALANCE, 0)) AS ml_bal, \
                      SUM(IF(MOP RLIKE '[4-5]' AND terminal NOT RLIKE 'WO', CURRENT_BALANCE, 0)) AS ml_bal_arr, \
                      SUM(IF(MOP RLIKE '[7-9]' AND terminal NOT RLIKE 'WO', CURRENT_BALANCE, 0)) AS ml_bal_def, \
@@ -45,17 +40,18 @@ df_ind = spark.sql("SELECT TU_Consumer_ID, Ref_date, \
                      SUM(IF(terminal RLIKE 'WO' AND ml_insured = 1, chargoff_refine, 0)) AS ml_chargoff_ins, \
                      SUM(IF(terminal RLIKE 'WO' AND ml_insured = 1, chargoff_new, 0)) AS ml_chargoff_new_ins \
                    FROM df_acct \
-                   GROUP BY TU_Consumer_ID, Ref_date ")
+                   GROUP BY TU_Consumer_ID, Ref_date, fsa_ml, Encrypted_LDU_ml, prov_ml, distance_min_ml, FM_damage_ml ")
 
 df_ind.createOrReplaceTempView("df_ind")
 
-# Exclude fully paid (PD) / charged off (WO) accounts for number of accounts, credit limit, and credit score at origination
-df_ind_active = spark.sql("SELECT TU_Consumer_ID, Ref_date, \
+# Calculate the number of accounts and the credit limit
+# Exclude fully paid (PD) / charged off (WO) accounts for number of accounts and credit limit
+df_ind_active = spark.sql("SELECT TU_Consumer_ID, Ref_date, fsa_ml, Encrypted_LDU_ml, prov_ml, distance_min_ml, FM_damage_ml, \
                             COUNT(TU_Trade_ID) AS N_ml, \
                             SUM(cr_lmt) AS ml_lmt \
                           FROM df_acct \
                           WHERE terminal NOT RLIKE '(PD|WO)' \
-                          GROUP BY TU_Consumer_ID, Ref_date ")
+                          GROUP BY TU_Consumer_ID, Ref_date, fsa_ml, Encrypted_LDU_ml, prov_ml, distance_min_ml, FM_damage_ml ")
 
 df_ind_active.createOrReplaceTempView("df_ind_active")
 
@@ -64,7 +60,12 @@ df_ind = spark.sql("SELECT df_ind.*, \
                    FROM df_ind \
                    LEFT JOIN df_ind_active \
                      ON df_ind.TU_Consumer_ID = df_ind_active.TU_Consumer_ID \
-                     AND df_ind.Ref_date = df_ind_active.Ref_date ")
+                     AND df_ind.Ref_date = df_ind_active.Ref_date \
+                     AND df_ind.fsa_ml = df_ind_active.fsa_ml \
+                     AND df_ind.Encrypted_LDU_ml = df_ind_active.Encrypted_LDU_ml \
+                     AND df_ind.prov_ml = df_ind_active.prov_ml \
+                     AND df_ind.distance_min_ml = df_ind_active.distance_min_ml \
+                     AND df_ind.FM_damage_ml = df_ind_active.FM_damage_ml ")
 
 df_ind.createOrReplaceTempView("df_ind")
 

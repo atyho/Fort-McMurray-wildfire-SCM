@@ -14,7 +14,6 @@ module load sbt
 module load anaconda2/4.3.1
 module load java/1.8.0_141
 module load spark/2.3.0
-module list
 
 ulimit -s unlimited
 #ulimit -u 81920
